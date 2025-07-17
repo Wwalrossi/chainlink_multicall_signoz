@@ -16,31 +16,46 @@ use opentelemetry::{
     Context, Key, KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
-use tonic::metadata::{MetadataMap, MetadataValue};
 
 use dotenv::dotenv;
 
 
 fn init_tracer() -> Result<sdktrace::Tracer, TraceError> {
-    let signoz_ingestion_key = std::env::var("SIGNOZ_INGESTION_KEY").expect("SIGNOZ_INGESTION_KEY not set");
-    let mut metadata = MetadataMap::new();
-    metadata.insert(
-        "signoz-ingestion-key",
-        MetadataValue::from_str(&signoz_ingestion_key).unwrap(),
-    );
-    opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_metadata(metadata)
-                .with_endpoint(std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set")),
-        )
+    let signoz_endpoint = std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set");
+    
+    // Add /v1/traces path for HTTP OTLP endpoint
+    let http_endpoint = if signoz_endpoint.ends_with("/v1/traces") {
+        signoz_endpoint
+    } else {
+        format!("{}/v1/traces", signoz_endpoint.trim_end_matches('/'))
+    };
+    
+    println!("Connecting to SigNoz at: {}", http_endpoint);
+    
+    // Create HTTP exporter instead of gRPC
+    let exporter = opentelemetry_otlp::new_exporter()
+        .http()
+        .with_endpoint(http_endpoint);
+    
+    // For HTTP, we need to add headers differently
+    let pipeline = opentelemetry_otlp::new_pipeline().tracing();
+    
+    // Add API key if provided (for secured SigNoz instances)
+    if let Ok(api_key) = std::env::var("SIGNOZ_API_KEY") {
+        // For HTTP, headers are typically added via environment variables or directly in requests
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", format!("signoz-ingestion-key={}", api_key));
+        }
+        println!("Using API key authentication");
+    }
+    
+    pipeline
+        .with_exporter(exporter)
         .with_trace_config(
             sdktrace::config().with_resource(Resource::new(vec![
                 KeyValue::new(
                     opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    std::env::var("APP_NAME").expect("APP_NAME not set"),
+                    std::env::var("APP_NAME").unwrap_or_else(|_| "chainlink_multicall_signoz".to_string()),
                 ),
             ])),
         )
@@ -85,7 +100,7 @@ let _ = init_tracer();
         span.set_attribute(Key::new("KEY").string("value"));
 
         span.add_event(
-            format!("Operations"),
+            "Operations",
             vec![
                 Key::new("SigNoz is").string("Awesome"),
             ],
