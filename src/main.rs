@@ -6,8 +6,49 @@ use alloy_sol_types::sol; // Макрос 'sol!' для генерации Rust-
 
 use std::error::Error; // Стандартный трейт для обработки ошибок.
 use std::sync::Arc; // Arc (Atomic Reference Count) для безопасного совместного владения провайдером в асинхронном коде.
+//________________________________________________________________________________________________________
+//Signoz
+
+use opentelemetry::global::shutdown_tracer_provider;
+use opentelemetry::sdk::Resource;
+use opentelemetry::trace::TraceError;
+use opentelemetry::{
+    global, sdk::trace as sdktrace,
+    trace::{TraceContextExt, Tracer},
+    Context, Key, KeyValue,
+};
+use opentelemetry_otlp::WithExportConfig;
+use tonic::metadata::{MetadataMap, MetadataValue};
+
+use dotenv::dotenv;
 
 
+fn init_tracer() -> Result<sdktrace::Tracer, TraceError> {
+    let signoz_ingestion_key = std::env::var("SIGNOZ_INGESTION_KEY").expect("SIGNOZ_INGESTION_KEY not set");
+    let mut metadata = MetadataMap::new();
+    metadata.insert(
+        "signoz-ingestion-key",
+        MetadataValue::from_str(&signoz_ingestion_key).unwrap(),
+    );
+    opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_metadata(metadata)
+                .with_endpoint(std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set")),
+        )
+        .with_trace_config(
+            sdktrace::config().with_resource(Resource::new(vec![
+                KeyValue::new(
+                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                    std::env::var("APP_NAME").expect("APP_NAME not set"),
+                ),
+            ])),
+        )
+        .install_batch(opentelemetry::runtime::Tokio)
+}
+//_____________________________________________________________________________________________________
 // --- 1. Генерируем Rust-биндинги для вашего оракула ---
 // Макрос 'sol!' читает переданный ему код Solidity (или его часть, описывающую интерфейс)
 // и генерирует соответствующие структуры и методы на Rust.
@@ -29,36 +70,54 @@ sol! {
 }
 
 
- #[tokio::main] //- атрибут, который превращает асинхронную функцию main в синхронную точку входа
-// и запускает Tokio-рантайм, необходимый для асинхронных операций.
+ #[tokio::main] 
 async fn main() -> eyre::Result<(), Box<dyn Error>> {
+
     // Инициализация логирования с помощью tracing-subscriber.
-    // Полезно для отладки, выводя сообщения о работе программы.
     tracing_subscriber::fmt::init();
+//_____________________________________________________________________________________________________
+    //Signoz
+    
+    dotenv().ok();
+let _ = init_tracer();
+
+  let tracer = global::tracer("global_tracer");
+    let _cx = Context::new();
+  
+    tracer.in_span("operation", |cx| {
+        let span = cx.span();
+        span.set_attribute(Key::new("KEY").string("value"));
+
+        span.add_event(
+            format!("Operations"),
+            vec![
+                Key::new("SigNoz is").string("Awesome"),
+            ],
+        );
+    });
+    shutdown_tracer_provider();
+//_____________________________________________________________________________________________________
 
     // Определяем URL WebSocket RPC
     let rpc_url = "wss://ethereum-rpc.publicnode.com";
-
- 
     println!("Подключаемся к RPC-узлу по WebSocket: {}", rpc_url);
     
-    // Создаем WebSocket-транспорт для подключения к RPC-узлу.
+   //созд WS-транспорт
     let ws_transport = WsConnect::new(rpc_url);
     
     // Создаем провайдер, который будет использовать WebSocket-транспорт.
     // ProviderBuilder::new() создает билдер.
-    // .connect_ws(ws_transport) устанавливает WebSocket-соединение.
-    // .await? дожидается завершения асинхронной операции подключения
-    // и возвращает ошибку, если она произошла (благодаря '?' оператору).
+    // .connect_ws(ws_transport) устанавливает WebSocket
+    // .await? дожидается завершения операции подключения + ? Err
+
     let connected_provider = ProviderBuilder::new()
         .connect_ws(ws_transport)
         .await?;
     
-    // Оборачиваем провайдер в Arc. Это позволяет безопасно делиться владением
-    // провайдером между несколькими асинхронными задачами или потоками.
+    // Оборачиваем провайдер в Arc, безопасно делиться владением
+    // между несколькими задачами или потоками.
     let provider = Arc::new(connected_provider); 
 
-    // Сообщение об успешном подключении.
     println!(" ___OK___");
 
     // Определяем адрес контракта оракула в сети Ethereum.

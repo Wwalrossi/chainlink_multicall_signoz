@@ -20,24 +20,11 @@ tokio = { version = "1.38", features = ["full"] }
 eyre = "0.6"
 tracing-subscriber = "0.3"
 
-# --- Добавления для OpenTelemetry и SigNoz ---
-# Добавим эти зависимости только если включена фича "telemetry"
-opentelemetry = { version = "0.18.0", features = ["rt-tokio", "metrics", "trace"], optional = true }
-opentelemetry-otlp = { version = "0.11.0", features = ["trace", "metrics"], optional = true }
-opentelemetry-semantic-conventions = { version = "0.10.0", optional = true }
-opentelemetry-proto = { version = "0.1.0", optional = true } # Часто нужен, хотя не всегда в документации
-tonic = { version = "0.8.2", features = ["tls-roots"], optional = true }
-dotenv = "0.15.0" # Всегда нужен для загрузки .env
+opentelemetry = { version = "0.18.0", features = ["rt-tokio", "metrics", "trace"] }
+opentelemetry-otlp = { version = "0.11.0", features = ["trace", "metrics"] }
+opentelemetry-semantic-conventions = { version = "0.10.0" }
+opentelemetry-proto = { version = "0.1.0"}
 
-[features]
-# Определяем фичу "telemetry". По умолчанию она отключена.
-# Когда эта фича включена, будут компилироваться и использоваться OpenTelemetry зависимости.
-# Это позволяет отключить трассировку, когда она не нужна (например, для локальной разработки без SigNoz).
-# default = ["telemetry"] # Вот так она была бы включена по умолчанию
-telemetry = [
-    "opentelemetry",
-    "opentelemetry-otlp",
-    "opentelemetry-semantic-conventions",
-    "opentelemetry-proto",
-    "tonic",
-]
+dotenv = "0.15.0"
+
+tonic = { version = "0.8.2", features = ["tls-roots"] }
