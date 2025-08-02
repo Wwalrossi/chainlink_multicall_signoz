@@ -1,0 +1,9 @@
+  - name: Context7 MCP
+    command: npx
+    args:
+      - -y
+      - @upstash/context7-mcp
+    env: {}
+    config:
+      key1: value1
+      key2: value2
