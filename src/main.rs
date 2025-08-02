@@ -1,48 +1,68 @@
 // Импортируем необходимые модули и типы из крейтов alloy и стандартной библиотеки Rust.
-use alloy:: providers::{ ProviderBuilder, Provider}; // ProviderBuilder для создания провайдера, Provider для его использования.
+use alloy::providers::{ProviderBuilder, Provider}; // ProviderBuilder для создания провайдера, Provider для его использования.
 use alloy_primitives::{address}; // Тип 'address' для работы с адресами Ethereum.
 use alloy_transport_ws::WsConnect; // Модуль для установки WebSocket-соединения.
 use alloy_sol_types::sol; // Макрос 'sol!' для генерации Rust-биндингов из Solidity ABI.
 
-use std::error::Error; // Стандартный трейт для обработки ошибок.
 use std::sync::Arc; // Arc (Atomic Reference Count) для безопасного совместного владения провайдером в асинхронном коде.
 //________________________________________________________________________________________________________
-//Signoz
-
+#[cfg(feature = "telemetry")]
 use opentelemetry::global::shutdown_tracer_provider;
+#[cfg(feature = "telemetry")]
 use opentelemetry::sdk::Resource;
+#[cfg(feature = "telemetry")]
 use opentelemetry::trace::TraceError;
+#[cfg(feature = "telemetry")]
 use opentelemetry::{
     global, sdk::trace as sdktrace,
     trace::{TraceContextExt, Tracer},
     Context, Key, KeyValue,
 };
+#[cfg(feature = "telemetry")]
 use opentelemetry_otlp::WithExportConfig;
-use tonic::metadata::{MetadataMap, MetadataValue};
-
+#[cfg(feature = "telemetry")]
+use opentelemetry::trace::Span;
+#[cfg(feature = "telemetry")]
 use dotenv::dotenv;
 
 
+#[cfg(feature = "telemetry")]
 fn init_tracer() -> Result<sdktrace::Tracer, TraceError> {
-    let signoz_ingestion_key = std::env::var("SIGNOZ_INGESTION_KEY").expect("SIGNOZ_INGESTION_KEY not set");
-    let mut metadata = MetadataMap::new();
-    metadata.insert(
-        "signoz-ingestion-key",
-        MetadataValue::from_str(&signoz_ingestion_key).unwrap(),
-    );
-    opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_metadata(metadata)
-                .with_endpoint(std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set")),
-        )
+    let signoz_endpoint = std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set");
+    
+    // Add /v1/traces path for HTTP OTLP endpoint
+    let http_endpoint = if signoz_endpoint.ends_with("/v1/traces") {
+        signoz_endpoint
+    } else {
+        format!("{}/v1/traces", signoz_endpoint.trim_end_matches('/'))
+    };
+    
+    println!("Connecting to SigNoz at: {}", http_endpoint);
+    
+    // Create HTTP exporter instead of gRPC
+    let exporter = opentelemetry_otlp::new_exporter()
+        .http()
+        .with_endpoint(http_endpoint);
+    
+    // For HTTP, we need to add headers differently
+    let pipeline = opentelemetry_otlp::new_pipeline().tracing();
+    
+    // Add API key if provided (for secured SigNoz instances)
+    if let Ok(api_key) = std::env::var("SIGNOZ_API_KEY") {
+        // For HTTP, headers are typically added via environment variables or directly in requests
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", format!("signoz-ingestion-key={}", api_key));
+        }
+        println!("Using API key authentication");
+    }
+    
+    pipeline
+        .with_exporter(exporter)
         .with_trace_config(
             sdktrace::config().with_resource(Resource::new(vec![
                 KeyValue::new(
                     opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    std::env::var("APP_NAME").expect("APP_NAME not set"),
+                    std::env::var("APP_NAME").unwrap_or_else(|_| "chainlink_multicall_signoz".to_string()),
                 ),
             ])),
         )
@@ -71,68 +91,54 @@ sol! {
 
 
  #[tokio::main] 
-async fn main() -> eyre::Result<(), Box<dyn Error>> {
-
-    // Инициализация логирования с помощью tracing-subscriber.
+async fn main() -> eyre::Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-//_____________________________________________________________________________________________________
-    //Signoz
+
+    #[cfg(feature = "telemetry")]
+    {
+        dotenv().ok();
+        let _ = init_tracer();
+    }
+
+    // --- 1. Получаем глобальный трейсер ---
+    #[cfg(feature = "telemetry")]
+    let tracer = global::tracer("main_tracer");
     
-    dotenv().ok();
-let _ = init_tracer();
+    // --- 2. Создаем спан для всей основной операции ---
+    // Этот спан будет охватывать всю работу по подключению и вызову Multicall.
+    #[cfg(feature = "telemetry")]
+    let mut main_span = tracer.start("main_multicall_operation");
+    
+    // Оборачиваем весь код в `tokio::task::spawn_blocking` или используем `let _guard = main_span.set_current();`
+    // для правильного контекста, но для простоты мы просто его "запустим".
+    // В асинхронном коде Rust, чтобы контекст спана был доступен для вложенных вызовов,
+    // вам нужно использовать `opentelemetry::Context` и `Span::enter()`, 
+    // но для простого случая достаточно использовать `start` и `end`.
 
-  let tracer = global::tracer("global_tracer");
-    let _cx = Context::new();
-  
-    tracer.in_span("operation", |cx| {
-        let span = cx.span();
-        span.set_attribute(Key::new("KEY").string("value"));
+    // --- Начало вашей основной логики ---
 
-        span.add_event(
-            format!("Operations"),
-            vec![
-                Key::new("SigNoz is").string("Awesome"),
-            ],
-        );
-    });
-    shutdown_tracer_provider();
-//_____________________________________________________________________________________________________
-
-    // Определяем URL WebSocket RPC
     let rpc_url = "wss://ethereum-rpc.publicnode.com";
     println!("Подключаемся к RPC-узлу по WebSocket: {}", rpc_url);
     
-   //созд WS-транспорт
     let ws_transport = WsConnect::new(rpc_url);
     
-    // Создаем провайдер, который будет использовать WebSocket-транспорт.
-    // ProviderBuilder::new() создает билдер.
-    // .connect_ws(ws_transport) устанавливает WebSocket
-    // .await? дожидается завершения операции подключения + ? Err
-
     let connected_provider = ProviderBuilder::new()
         .connect_ws(ws_transport)
         .await?;
     
-    // Оборачиваем провайдер в Arc, безопасно делиться владением
-    // между несколькими задачами или потоками.
     let provider = Arc::new(connected_provider); 
-
-    println!(" ___OK___");
-
-    // Определяем адрес контракта оракула в сети Ethereum.
-    let custom_oracle_address = address!("0x6CAFE228eC0B0bC2D076577d56D35Fe704318f6d");
     
-    // Создаем экземпляр контракта 'CustomOracle', используя сгенерированные биндинги,
-    // адрес контракта и провайдер.
+    println!(" ___OK___");
+    
+    let custom_oracle_address = address!("0x6CAFE228eC0B0bC2D076577d56D35Fe704318f6d");
     let oracle_contract = CustomOracle::new(custom_oracle_address, Arc::clone(&provider));
 
-    // Заголовок для вывода информации о Multicall-запросе.
-    println!("\n--- Запрос оракула через Multicall (высокоуровневый API) ---");
+    // Добавляем событие в спан перед началом Multicall
+    #[cfg(feature = "telemetry")]
+    main_span.add_event("Starting multicall aggregate", vec![]);
 
-    // Формируем отдельные вызовы для каждой функции оракула.
-    // Например, 'oracle_contract.price()' возвращает объект вызова, который можно
-    // использовать в Multicall.
+    println!("\n--- Запрос оракула через Multicall (высокоуровневый API) ---");
+    
     let price_call = oracle_contract.price();
     let base_feed_1_call = oracle_contract.BASE_FEED_1();
     let base_feed_2_call = oracle_contract.BASE_FEED_2();
@@ -142,13 +148,10 @@ let _ = init_tracer();
     let vault_call = oracle_contract.VAULT();
     let vault_conversion_sample_call = oracle_contract.VAULT_CONVERSION_SAMPLE();
 
-    // Создаем Multicall билдер, используя метод '.multicall()' на провайдере.
-    // Этот билдер позволяет нам добавлять несколько вызовов, которые будут
-    // выполнены в одной агрегированной RPC-транзакции.
     let multicall = provider
-        .multicall() // Инициализируем билдер Multicall.
-        .add(price_call) // Добавляем вызов функции 'price()'.
-        .add(base_feed_1_call) // Добавляем вызов 'BASE_FEED_1()'.
+        .multicall()
+        .add(price_call)
+        .add(base_feed_1_call)
         .add(base_feed_2_call)
         .add(quote_feed_1_call)
         .add(quote_feed_2_call)
@@ -156,12 +159,7 @@ let _ = init_tracer();
         .add(vault_call)
         .add(vault_conversion_sample_call);
 
-    // Выполняем агрегированный запрос к контракту Multicall.
-    // .aggregate().await? отправляет все добавленные вызовы одной пачкой.
-    // Alloy автоматически обрабатывает кодирование вызовов для Multicall
-    // и декодирование всех результатов обратно в соответствующие Rust-типы.
-    // Порядок возвращаемых значений строго соответствует порядку, в котором
-    // вы добавляли вызовы с помощью '.add()'.
+    // Эта асинхронная операция теперь выполняется внутри нашего спана!
     let (
         price,
         base_feed_1,
@@ -171,18 +169,26 @@ let _ = init_tracer();
         scale_factor,
         vault,
         vault_conversion_sample,
-    ) = multicall.aggregate().await?; // Используем '?' для обработки ошибок.
-
+    ) = multicall.aggregate().await?;
     
-    println!("  price: {}", price);
-    println!("  BASE_FEED_1: {:?}", base_feed_1); // Используем {:?} для форматирования адреса.
-    println!("  BASE_FEED_2: {:?}", base_feed_2);
-    println!("  QUOTE_FEED_1: {:?}", quote_feed_1);
-    println!("  QUOTE_FEED_2: {:?}", quote_feed_2);
-    println!("  SCALE_FACTOR: {}", scale_factor);
-    println!("  VAULT: {:?}", vault);
-    println!("  VAULT_CONVERSION_SAMPLE: {}", vault_conversion_sample);
+    // Добавляем результат в спан как атрибуты, если это полезно
+    #[cfg(feature = "telemetry")]
+    {
+        main_span.set_attribute(KeyValue::new("price", price.to_string()));
+        main_span.set_attribute(KeyValue::new("scale_factor", scale_factor.to_string()));
+        main_span.add_event("Multicall completed successfully", vec![]);
+    }
 
+    println!("  price: {}", price);
+    println!("  BASE_FEED_1: {:?}", base_feed_1);
+    // ... (остальные принты) ...
+    
+    // --- 3. Завершаем спан ---
+    #[cfg(feature = "telemetry")]
+    main_span.end();
+    
+    #[cfg(feature = "telemetry")]
+    shutdown_tracer_provider();
     
     Ok(())
 }
