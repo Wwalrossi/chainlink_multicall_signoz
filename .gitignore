@@ -1,9 +1,2 @@
-<<<<<<< HEAD
 target
 .env
-=======
-/target
-.env
-src/chainlink_multicall_signoz.code-workspace
-/.continue
->>>>>>> ba652fc (new)
