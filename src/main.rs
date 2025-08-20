@@ -1,3 +1,9 @@
+#[cfg(feature = "telemetry")]
+use opentelemetry::trace::Span;
+#[cfg(feature = "telemetry")]
+use dotenv::dotenv;
+#[cfg(feature = "telemetry")]
+use opentelemetry::trace::Tracer;
 // Импортируем необходимые модули и типы из крейтов alloy и стандартной библиотеки Rust.
 use alloy::providers::{ProviderBuilder, Provider}; // ProviderBuilder для создания провайдера, Provider для его использования.
 use alloy_primitives::{address}; // Тип 'address' для работы с адресами Ethereum.
@@ -6,68 +12,21 @@ use alloy_sol_types::sol; // Макрос 'sol!' для генерации Rust-
 
 use std::sync::Arc; // Arc (Atomic Reference Count) для безопасного совместного владения провайдером в асинхронном коде.
 //________________________________________________________________________________________________________
+// Импорт необходимых модулей и типов.
+
+#[cfg(feature = "telemetry")]
+mod telemetry;
+#[cfg(feature = "telemetry")]
+use telemetry::init_tracer;
+#[cfg(feature = "telemetry")]
+use opentelemetry::global;
+#[cfg(feature = "telemetry")]
+use opentelemetry::KeyValue;
 #[cfg(feature = "telemetry")]
 use opentelemetry::global::shutdown_tracer_provider;
-#[cfg(feature = "telemetry")]
-use opentelemetry::sdk::Resource;
-#[cfg(feature = "telemetry")]
-use opentelemetry::trace::TraceError;
-#[cfg(feature = "telemetry")]
-use opentelemetry::{
-    global, sdk::trace as sdktrace,
-    trace::{TraceContextExt, Tracer},
-    Context, Key, KeyValue,
-};
-#[cfg(feature = "telemetry")]
-use opentelemetry_otlp::WithExportConfig;
-#[cfg(feature = "telemetry")]
-use opentelemetry::trace::Span;
-#[cfg(feature = "telemetry")]
-use dotenv::dotenv;
 
+// ...existing code...
 
-#[cfg(feature = "telemetry")]
-fn init_tracer() -> Result<sdktrace::Tracer, TraceError> {
-    let signoz_endpoint = std::env::var("SIGNOZ_ENDPOINT").expect("SIGNOZ_ENDPOINT not set");
-    
-    // Add /v1/traces path for HTTP OTLP endpoint
-    let http_endpoint = if signoz_endpoint.ends_with("/v1/traces") {
-        signoz_endpoint
-    } else {
-        format!("{}/v1/traces", signoz_endpoint.trim_end_matches('/'))
-    };
-    
-    println!("Connecting to SigNoz at: {}", http_endpoint);
-    
-    // Create HTTP exporter instead of gRPC
-    let exporter = opentelemetry_otlp::new_exporter()
-        .http()
-        .with_endpoint(http_endpoint);
-    
-    // For HTTP, we need to add headers differently
-    let pipeline = opentelemetry_otlp::new_pipeline().tracing();
-    
-    // Add API key if provided (for secured SigNoz instances)
-    if let Ok(api_key) = std::env::var("SIGNOZ_API_KEY") {
-        // For HTTP, headers are typically added via environment variables or directly in requests
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", format!("signoz-ingestion-key={}", api_key));
-        }
-        println!("Using API key authentication");
-    }
-    
-    pipeline
-        .with_exporter(exporter)
-        .with_trace_config(
-            sdktrace::config().with_resource(Resource::new(vec![
-                KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    std::env::var("APP_NAME").unwrap_or_else(|_| "chainlink_multicall_signoz".to_string()),
-                ),
-            ])),
-        )
-        .install_batch(opentelemetry::runtime::Tokio)
-}
 //_____________________________________________________________________________________________________
 // --- 1. Генерируем Rust-биндинги для вашего оракула ---
 // Макрос 'sol!' читает переданный ему код Solidity (или его часть, описывающую интерфейс)

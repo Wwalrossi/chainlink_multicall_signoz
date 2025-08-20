@@ -5,7 +5,7 @@ edition = "2024"
 
 
 [features]
-# start whit Signoz  -  cargo run --features telemetry
+# start whit Signoz  -  cargo run cargo run --release --features telemetry
 telemetry = [
     "opentelemetry",
     "opentelemetry-otlp",
